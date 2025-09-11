@@ -5,9 +5,8 @@ import com.github.dockerjava.api.model.ExposedPort
 import com.github.dockerjava.api.model.HostConfig
 import com.github.dockerjava.api.model.Mount
 import com.github.dockerjava.api.model.MountType
-import com.github.dockerjava.api.model.Volume
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
+import org.ktorm.dsl.insert
 import org.ktorm.dsl.update
 import org.octsrv.schema.*
 import java.io.ByteArrayInputStream
@@ -17,29 +16,27 @@ import kotlin.time.Duration.Companion.seconds
 suspend fun newSeason(server: Server, modpack: Modpack) {
     // 0. create and insert season into database
     val newSeason = Season(server.nextSeasonId(), modpack.id)
-//    database.insert(Seasons) {
-//        set(it.season, newSeason.id)
-//        set(it.modpackId, newSeason.modpackId)
-//    }
-
-    // 1. duplicate modpack volume, new volume name: season id
-
-    try {
-        dockerClient.createVolumeCmd()
-            .withName(newSeason.id)
-            .exec()
-    } catch (e: Exception) {
-        e.printStackTrace()
+    database.insert(Seasons) {
+        set(it.season, newSeason.id)
+        set(it.modpackId, newSeason.modpackId)
     }
 
-    try {
+    // 1. duplicate modpack volume, new volume name: season id
+    // 1.1 create volume
+    logIfError {
+        dockerClient.createVolumeCmd()
+            .withName(newSeason.volumeName)
+            .exec()
+    }
+    // 1.2 copy volume content
+    logIfError {
         val container = dockerClient.createContainerCmd("alpine")
             .withName("volume_copy_tmp_${randomHex(4)}")
             .withCmd("sh", "-c", "cp -a /from/. /to/")
             .withHostConfig(HostConfig.newHostConfig()
                 .withMounts(listOf(
-                    Mount().withTarget("/to").withSource(newSeason.id).withType(MountType.VOLUME),
-                    Mount().withTarget("/from").withSource(modpack.id).withType(MountType.VOLUME)
+                    Mount().withTarget("/from").withSource(modpack.volumeName).withType(MountType.VOLUME),
+                    Mount().withTarget("/to").withSource(newSeason.volumeName).withType(MountType.VOLUME)
                 ))
             )
             .exec()
@@ -51,46 +48,37 @@ suspend fun newSeason(server: Server, modpack: Modpack) {
         delay(10.seconds)
 
         dockerClient.removeContainerCmd(container.id).exec()
-    } catch (e: Exception) {
-        e.printStackTrace()
     }
 
     // 2. send in game message
-    try {
+    logIfError {
         dockerClient.attachContainerCmd(server.containerName)
             .withStdIn(ByteArrayInputStream("say 伺服器要換包囉!\n".toByteArray()))
             .exec(ResultCallback.Adapter())
-    } catch (e: Exception) {
-        e.printStackTrace()
     }
-
 
     // 3. send discord message
     WebHookService.sendNewSeasonStart()
+
     // 4. stop server (with 2 stage timeout)
-    run {
-        try {
-            dockerClient.attachContainerCmd(server.containerName)
-                .withStdIn(ByteArrayInputStream("stop\n".toByteArray()))
-                .exec(ResultCallback.Adapter())
+    logIfError {
+        dockerClient.attachContainerCmd(server.containerName)
+            .withStdIn(ByteArrayInputStream("stop\n".toByteArray()))
+            .exec(ResultCallback.Adapter())
 
-            delay(10.seconds)
-            if (!dockerClient.inspectContainerCmd(server.containerName).exec().state.running!!)
-                return@run
+        delay(10.seconds)
+        // return if container successfully stopped
+        if (!dockerClient.inspectContainerCmd(server.containerName).exec().state.running!!)
+            return@logIfError
 
-            dockerClient.stopContainerCmd(server.containerName).exec()
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        dockerClient.stopContainerCmd(server.containerName).exec()
     }
 
     // 5. remove container
-    try {
+    logIfError {
         dockerClient.removeContainerCmd(server.containerName)
             .withForce(true)   // remove even if running
             .exec()
-    } catch (e: Exception) {
-        e.printStackTrace()
     }
 
 
@@ -105,7 +93,7 @@ suspend fun newSeason(server: Server, modpack: Modpack) {
         .withHostConfig(
             HostConfig.newHostConfig()
                 .withNetworkMode("epoxi-ingress")
-            .withMounts(listOf(Mount().withTarget("/server").withSource(newSeason.id).withType(MountType.VOLUME)))
+            .withMounts(listOf(Mount().withTarget("/server").withSource(newSeason.volumeName).withType(MountType.VOLUME)))
         )
         .withWorkingDir("/server")
         .withExposedPorts(ExposedPort(25565))
@@ -119,11 +107,9 @@ suspend fun newSeason(server: Server, modpack: Modpack) {
     delay(5.seconds)
     if (!dockerClient.inspectContainerCmd(container.id).exec().state.running!!) {
         // send discord message server died
-        WebHookService.sendErrorWebhook("server container did not survive 1 minute after creation")
+        WebHookService.sendFatalErrorWebhook("server container did not survive 1 minute after creation")
         return@newSeason
     }
     // 9. send discord message
     WebHookService.sendNewSeasonDone()
-
-    // if any stage fails, send discord message
 }

@@ -20,21 +20,52 @@ object Seasons : Table<Nothing>("seasons") {
     val modpackId = varchar("modpack_id")
 }
 
-val modpackIdRegex = "^[a-z_]+$".toRegex()
+val modpackIdRegex = "^[a-z0-9_]+$".toRegex()
 val serverIdRegex = "^[0-9]{2}$".toRegex()
 val seasonIdRegex = "^[0-9]{2}.[0-9]{3}.[0-9]{2}\$".toRegex()
+val domainRegex = "^((?!-)[A-Za-z0-9-]{1,63}(?<!-)\\.)+[A-Za-z]{2,6}$".toRegex()
+
+data class Modpack(val id: String, val startupScript: String, val javaVersion: MPJavaVersion) {
+    val volumeName = "epoxi-modpack_${id}"
+    init {
+        this.validate()?.let {
+            throw IllegalArgumentException("Error creating Modpack object, Invalid $it")
+        }
+    }
+    fun validate(): String? {
+        if (!modpackIdRegex.matches(id)) return "name"
+        if (isValidPath(startupScript)) return "version"
+        return null
+    }
+}
 
 data class Server(val id: String, val currentSeason: String, val proxyHostname: String) {
     val containerName = "epoxi-server-$id"
+    init {
+        this.validate()?.let {
+            throw IllegalArgumentException("Error creating Server object, Invalid $it")
+        }
+    }
+    fun validate(): String? {
+        if (!serverIdRegex.matches(id)) return "name"
+        if (!seasonIdRegex.matches(currentSeason)) return "season"
+        if (!isValidPath(proxyHostname)) return "hostname"
+        return null
+    }
     fun nextSeasonId(): String = currentSeason.split(".").let {
         "${it[0]}.${(it[1].toInt() + 1).toString().padStart(3, '0')}.${it[2]}"
     }
 }
-data class Season(val id: String, val modpackId: String)
-data class Modpack(val id: String, val startupScript: String, val javaVersion: MPJavaVersion) {
-    fun isValid(): String? {
-        if (!modpackIdRegex.matches(id)) return "name"
-        if (isValidPath(startupScript)) return "version"
+data class Season(val id: String, val modpackId: String) {
+    val volumeName = "epoxi-season_${id}"
+    init {
+        this.validate()?.let {
+            throw IllegalArgumentException("Error creating Season object, Invalid $it")
+        }
+    }
+    fun validate(): String? {
+        if (!seasonIdRegex.matches(id)) return "name"
+        if (!modpackIdRegex.matches(modpackId)) return "modpack"
         return null
     }
 }

@@ -18,9 +18,13 @@ object WebHookService {
         const val FAILED = "換季失敗"
     }
 
-    suspend fun sendErrorWebhook(error: String) {
+    suspend fun sendFatalErrorWebhook(error: String) {
         sendDiscordWebhook(URL.BROADCAST, BroadCast.FAILED)
-        sendDiscordWebhook(URL.ADMIN, "伺服器炸了，錯誤訊息： $error")
+        sendDiscordWebhook(URL.ADMIN, "伺服器炸了，錯誤訊息：$error")
+    }
+
+    suspend fun sendNonFatalErrorWebhook(error: String) {
+        sendDiscordWebhook(URL.ADMIN, "系統出現非致命錯誤：$error")
     }
 
     suspend fun sendScheduledNewSeason() =

@@ -16,7 +16,6 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import org.flywaydb.core.Flyway
 import org.ktorm.database.Database
 import org.ktorm.dsl.*
 import org.octsrv.Migration.migrateTable
@@ -66,18 +65,118 @@ fun Application.module() {
 
         post("/new-modpack") {
             val modpack = call.receive<Modpack>()
-            modpack.isValid()?.let {
+            modpack.validate()?.let {
                 return@post call.respond(HttpStatusCode.BadRequest, mapOf("error" to it))
             }
 
             dockerClient.createVolumeCmd()
-                .withName("epoxi-mp_${modpack.id}")
+                .withName(modpack.volumeName)
                 .exec()
 
             database.insert(Modpacks) {
                 set(it.id, modpack.id)
                 set(it.startupScript, modpack.startupScript)
             }
+        }
+
+        get("/modpacks") {
+            call.respond(database.from(Modpacks).select().map { row -> Modpack(
+                row[Modpacks.id]?:"",
+                row[Modpacks.startupScript]?:"",
+                MPJavaVersion.get(row[Modpacks.javaVersion])
+            ) })
+        }
+
+        delete("/modpack/{id}") {
+            val id = call.parameters["id"] ?:
+                return@delete call.respond(HttpStatusCode.BadRequest, mapOf("error" to "id is missing!"))
+            if (!modpackIdRegex.matches(id))
+                return@delete call.respond(HttpStatusCode.BadRequest, mapOf("error" to "id is invalid!"))
+
+            getModpackFromId(id)?:
+                return@delete call.respond(HttpStatusCode.NotFound)
+
+            database.delete(Modpacks) {
+                it.id eq id
+            }
+
+            // remove volume
+            logIfError {
+                dockerClient.removeVolumeCmd(id).exec()
+            }
+
+            return@delete call.respond(HttpStatusCode.OK)
+        }
+
+        data class NewServerReq(val id: String, val proxyHostname: String) {
+            fun validate(): String? {
+                if (!serverIdRegex.matches(id))
+                    return "Invalid server id!"
+                if (!domainRegex.matches(proxyHostname))
+                    return "Invalid proxy hostname!"
+                return null
+            }
+        }
+        post("/server") {
+            val server = call.receive<NewServerReq>()
+            server.validate()?.let {
+                return@post call.respond(HttpStatusCode.BadRequest, mapOf("error" to it))
+            }
+
+            database.insert(Servers) {
+                set(it.id, server.id)
+                set(it.proxyHostname, server.proxyHostname)
+                set(it.currentSeason, "${server.id}.000.00")
+            }
+
+            return@post call.respond(HttpStatusCode.OK)
+        }
+
+        get("/servers") {
+            call.respond(database.from(Servers).select().map { row -> Server(
+                row[Servers.id]?:"",
+                row[Servers.currentSeason]?:"",
+                row[Servers.proxyHostname]?:"",
+            ) })
+        }
+
+        patch("/server/{id}") {
+            val id = call.parameters["id"] ?:
+                return@patch call.respond(HttpStatusCode.BadRequest, mapOf("error" to "id is missing!"))
+            if (!serverIdRegex.matches(id))
+                return@patch call.respond(HttpStatusCode.BadRequest, mapOf("error" to "id is invalid!"))
+
+            getServerFromId(id)?:
+                return@patch call.respond(HttpStatusCode.NotFound)
+
+            val newServer = call.receive<Server>()
+            newServer.validate()?.let {
+                return@patch call.respond(HttpStatusCode.BadRequest, mapOf("error" to it))
+            }
+
+            database.update(Servers) {
+                set(it.currentSeason, newServer.currentSeason)
+                set(it.proxyHostname, newServer.proxyHostname)
+                where {
+                    it.id eq id
+                }
+            }
+        }
+
+        delete("/server/{id}") {
+            val id = call.parameters["id"] ?:
+                return@delete call.respond(HttpStatusCode.BadRequest, mapOf("error" to "id is missing!"))
+            if (!serverIdRegex.matches(id))
+                return@delete call.respond(HttpStatusCode.BadRequest, mapOf("error" to "id is invalid!"))
+
+            getServerFromId(id)?:
+                return@delete call.respond(HttpStatusCode.NotFound)
+
+            database.delete(Servers) {
+                it.id eq id
+            }
+
+            return@delete call.respond(HttpStatusCode.OK)
         }
 
         put("/server/{serverId}/new-season/{packId}") {
@@ -99,50 +198,40 @@ fun Application.module() {
             val scheduledTime: Long = call.request.queryParameters["time"]
                 ?.toLongOrNull() ?: ((System.currentTimeMillis() / 1000) + 5)
 
+            val modpack = getModpackFromId(packId)?:
+                return@put call.respond(HttpStatusCode.NotFound, mapOf("error" to "pack not found!"))
 
-            val modpack = database.from(Modpacks)
-                .select()
-                .map { row -> Modpack(
-                    row[Modpacks.id]?:"",
-                    row[Modpacks.startupScript]?:"",
-                    MPJavaVersion.get(row[Modpacks.javaVersion])
-                ) }
-                .find { it.id == packId }
-                ?: return@put call.respond(HttpStatusCode.NotFound, mapOf("error" to "pack not found!"))
-
-            val server = database.from(Servers)
-                .select()
-                .map { row -> Server(
-                    row[Servers.id]?:"",
-                    row[Servers.currentSeason]?:"",
-                    row[Servers.proxyHostname]?:"",
-                ) }
-                .find { it.id == serverId }
-                ?: return@put call.respond(HttpStatusCode.NotFound, mapOf("error" to "pack not found!"))
+            val server = getServerFromId(serverId)?:
+                return@put call.respond(HttpStatusCode.NotFound, mapOf("error" to "server not found!"))
 
             // 1. schedule job
             launch {
+                // calculate wait time
                 val nowEpochSeconds = System.currentTimeMillis() / 1000
 
                 var delaySeconds = scheduledTime - nowEpochSeconds
                 if (delaySeconds < 0) delaySeconds = 0
+                // wait until scheduled time
                 delay(delaySeconds.seconds)
 
+                // run and catch errors
                 try {
                     newSeason(server, modpack)
                 } catch (e: Exception) {
                     e.printStackTrace()
-                    WebHookService.sendErrorWebhook(e.message?:"unknown error")
+                    WebHookService.sendFatalErrorWebhook(e.message?:"unknown error")
                 }
             }
 
             // 2. send webhook
             WebHookService.sendScheduledNewSeason()
-            // 3. send in game message
-            dockerClient.attachContainerCmd(server.containerName)
-                .withStdIn(ByteArrayInputStream("say 伺服器在預定時間會換包!\n".toByteArray()))
-                .exec(ResultCallback.Adapter())
 
+            // 3. send in game message
+            logIfError {
+                dockerClient.attachContainerCmd(server.containerName)
+                    .withStdIn(ByteArrayInputStream("say 伺服器在預定時間會換包!\n".toByteArray()))
+                    .exec(ResultCallback.Adapter())
+            }
             return@put call.respond(HttpStatusCode.OK)
         }
     }
