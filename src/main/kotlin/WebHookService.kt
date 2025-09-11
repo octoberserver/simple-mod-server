@@ -12,10 +12,10 @@ object WebHookService {
     }
 
     private object BroadCast {
-        const val SCHEDULED_NEW_SEASON = ""
-        const val NEW_SEASON_START = ""
-        const val NEW_SEASON_DONE = ""
-        const val FAILED = ""
+        const val SCHEDULED_NEW_SEASON = "已排成換季"
+        const val NEW_SEASON_START = "開始換季"
+        const val NEW_SEASON_DONE = "換季完成"
+        const val FAILED = "換季失敗"
     }
 
     suspend fun sendErrorWebhook(error: String) {

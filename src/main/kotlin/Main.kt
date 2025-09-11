@@ -97,7 +97,7 @@ fun Application.module() {
             }
 
             val scheduledTime: Long = call.request.queryParameters["time"]
-                ?.toLongOrNull() ?: ((System.currentTimeMillis() / 1000) + 60)
+                ?.toLongOrNull() ?: ((System.currentTimeMillis() / 1000) + 5)
 
 
             val modpack = database.from(Modpacks)
@@ -117,7 +117,7 @@ fun Application.module() {
                     row[Servers.currentSeason]?:"",
                     row[Servers.proxyHostname]?:"",
                 ) }
-                .find { it.id == packId }
+                .find { it.id == serverId }
                 ?: return@put call.respond(HttpStatusCode.NotFound, mapOf("error" to "pack not found!"))
 
             // 1. schedule job
@@ -128,7 +128,12 @@ fun Application.module() {
                 if (delaySeconds < 0) delaySeconds = 0
                 delay(delaySeconds.seconds)
 
-                newSeason(server, modpack)
+                try {
+                    newSeason(server, modpack)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    WebHookService.sendErrorWebhook(e.message?:"unknown error")
+                }
             }
 
             // 2. send webhook
@@ -137,6 +142,8 @@ fun Application.module() {
             dockerClient.attachContainerCmd(server.containerName)
                 .withStdIn(ByteArrayInputStream("say 伺服器在預定時間會換包!\n".toByteArray()))
                 .exec(ResultCallback.Adapter())
+
+            return@put call.respond(HttpStatusCode.OK)
         }
     }
 }

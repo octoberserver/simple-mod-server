@@ -26,9 +26,8 @@ val seasonIdRegex = "^[0-9]{2}.[0-9]{3}.[0-9]{2}\$".toRegex()
 
 data class Server(val id: String, val currentSeason: String, val proxyHostname: String) {
     val containerName = "epoxi-server-$id"
-    fun nextSeasonId(): String = currentSeason.replace(Regex("\\.(\\d{3})\\.")) {
-        val seasonId = (it.groupValues[1].toInt() + 1).toString().padStart(3, '0')
-        "${it.groupValues[0]}.${seasonId}.${it.groupValues[2]}"
+    fun nextSeasonId(): String = currentSeason.split(".").let {
+        "${it[0]}.${(it[1].toInt() + 1).toString().padStart(3, '0')}.${it[2]}"
     }
 }
 data class Season(val id: String, val modpackId: String)
