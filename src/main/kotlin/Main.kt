@@ -16,13 +16,18 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
 import org.ktorm.database.Database
 import org.ktorm.dsl.*
 import org.octsrv.Migration.migrateTable
 import org.octsrv.schema.*
 import java.io.ByteArrayInputStream
+import java.io.File
 import java.time.Duration
 import kotlin.time.Duration.Companion.seconds
+
+//const val MC_ROUTER_HOSTS_FILE_PATH = "/app/config/hosts.json"
+const val MC_ROUTER_HOSTS_FILE_PATH = "./build/config/hosts.json"
 
 val database = Database.connect(
     url = "jdbc:sqlite:main.db",
@@ -42,6 +47,10 @@ val dockerClient: DockerClient = run {
 }
 
 fun main() {
+    val file = File(MC_ROUTER_HOSTS_FILE_PATH)
+    file.parentFile.mkdirs()
+    file.createNewFile()
+
     embeddedServer(Netty, port = 8080, module = Application::module).start(wait = true)
 }
 
@@ -52,6 +61,17 @@ fun Application.module() {
 
     install(ContentNegotiation) {
         json()
+    }
+
+    @Serializable
+    data class NewServerReq(val id: String, val proxyHostname: String) {
+        fun validate(): String? {
+            if (!serverIdRegex.matches(id))
+                return "Invalid server id!"
+            if (!domainRegex.matches(proxyHostname))
+                return "Invalid proxy hostname!"
+            return null
+        }
     }
 
     routing {
@@ -108,26 +128,29 @@ fun Application.module() {
             return@delete call.respond(HttpStatusCode.OK)
         }
 
-        data class NewServerReq(val id: String, val proxyHostname: String) {
-            fun validate(): String? {
-                if (!serverIdRegex.matches(id))
-                    return "Invalid server id!"
-                if (!domainRegex.matches(proxyHostname))
-                    return "Invalid proxy hostname!"
-                return null
-            }
-        }
         post("/server") {
-            val server = call.receive<NewServerReq>()
-            server.validate()?.let {
+            val req = call.receive<NewServerReq>()
+            req.validate()?.let {
                 return@post call.respond(HttpStatusCode.BadRequest, mapOf("error" to it))
             }
 
+            getServerFromId(req.id)?.let {
+                return@post call.respond(HttpStatusCode.Conflict, mapOf("error" to "server id already exists!"))
+            }
+
+            val server = Server(
+                req.id,
+                "${req.id}.000.00",
+                req.proxyHostname
+            )
+
             database.insert(Servers) {
                 set(it.id, server.id)
+                set(it.currentSeason, server.currentSeason)
                 set(it.proxyHostname, server.proxyHostname)
-                set(it.currentSeason, "${server.id}.000.00")
             }
+
+            addServerToProxy(req.proxyHostname, server.containerName)
 
             return@post call.respond(HttpStatusCode.OK)
         }
@@ -149,14 +172,17 @@ fun Application.module() {
             getServerFromId(id)?:
                 return@patch call.respond(HttpStatusCode.NotFound)
 
-            val newServer = call.receive<Server>()
-            newServer.validate()?.let {
+            val req = call.receive<NewServerReq>()
+            req.validate()?.let {
                 return@patch call.respond(HttpStatusCode.BadRequest, mapOf("error" to it))
             }
 
+            val server = getServerFromId(id) ?:
+                return@patch call.respond(HttpStatusCode.NotFound, mapOf("error" to "server not found!"))
+            addServerToProxy(server.id, server.containerName)
+
             database.update(Servers) {
-                set(it.currentSeason, newServer.currentSeason)
-                set(it.proxyHostname, newServer.proxyHostname)
+                set(it.proxyHostname, req.proxyHostname)
                 where {
                     it.id eq id
                 }
@@ -219,7 +245,7 @@ fun Application.module() {
                     newSeason(server, modpack)
                 } catch (e: Exception) {
                     e.printStackTrace()
-                    WebHookService.sendFatalErrorWebhook(e.message?:"unknown error")
+                    WebHookService.sendFailedNewSeason(e.message?:"unknown error")
                 }
             }
 

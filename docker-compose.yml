@@ -1,0 +1,22 @@
+services:
+  epoxi:
+    build: .
+    volumes:
+      - mc-router-config:/mc-router
+    command:
+      - "/app/gradlew"
+      - "run"
+  router:
+    image: itzg/mc-router
+    depends_on:
+      - epoxi
+    ports:
+      - "25565:25565"
+    volumes:
+      - mc-router-config:/app/config
+    command:
+      - "-routes-config-watch"
+      - "-routes-config"
+      - "/app/config/hosts.json"
+volumes:
+  mc-router-config:

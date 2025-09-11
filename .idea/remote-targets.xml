@@ -14,6 +14,25 @@
           </config>
         </ContributedStateBase>
       </target>
+      <target name="epoxi" type="docker-compose" uuid="486d1a2a-5838-4c66-be07-1dadfec9084d">
+        <config>
+          <option name="targetPlatform">
+            <TargetPlatform />
+          </option>
+          <option name="configurationFiles">
+            <list>
+              <option value="D:\workspace\projects\octsrv\allazo-epoxi\docker-compose.yml" />
+            </list>
+          </option>
+          <option name="serviceName" value="epoxi" />
+        </config>
+        <ContributedStateBase type="JavaLanguageRuntime">
+          <config>
+            <option name="homePath" value="/opt/java/openjdk" />
+            <option name="javaVersionString" value="21" />
+          </config>
+        </ContributedStateBase>
+      </target>
     </targets>
   </component>
 </project>

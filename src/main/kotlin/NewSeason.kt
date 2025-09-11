@@ -107,7 +107,7 @@ suspend fun newSeason(server: Server, modpack: Modpack) {
     delay(5.seconds)
     if (!dockerClient.inspectContainerCmd(container.id).exec().state.running!!) {
         // send discord message server died
-        WebHookService.sendFatalErrorWebhook("server container did not survive 1 minute after creation")
+        WebHookService.sendFailedNewSeason("server container did not survive 1 minute after creation")
         return@newSeason
     }
     // 9. send discord message

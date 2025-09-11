@@ -43,6 +43,7 @@ data class Server(val id: String, val currentSeason: String, val proxyHostname: 
     val containerName = "epoxi-server-$id"
     init {
         this.validate()?.let {
+            System.err.println("Error creating Server object, Invalid $it")
             throw IllegalArgumentException("Error creating Server object, Invalid $it")
         }
     }
@@ -56,10 +57,12 @@ data class Server(val id: String, val currentSeason: String, val proxyHostname: 
         "${it[0]}.${(it[1].toInt() + 1).toString().padStart(3, '0')}.${it[2]}"
     }
 }
+
 data class Season(val id: String, val modpackId: String) {
     val volumeName = "epoxi-season_${id}"
     init {
         this.validate()?.let {
+            System.err.println("Error creating Season object, Invalid $it")
             throw IllegalArgumentException("Error creating Season object, Invalid $it")
         }
     }
