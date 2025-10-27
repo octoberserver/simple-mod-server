@@ -1,19 +1,22 @@
 package org.octsrv.schema
 
 import org.ktorm.dsl.QueryRowSet
+import org.ktorm.dsl.eq
 import org.ktorm.dsl.from
 import org.ktorm.dsl.map
 import org.ktorm.dsl.select
+import org.ktorm.dsl.where
 import org.octsrv.database
 import org.octsrv.util.isValidPath
 
 data class Server(
     val id: String,
+    val name: String,
     val startupScript: String,
     val javaVersion: MPJavaVersion,
     val proxyHostname: String
 ) {
-    @Transient val volumeName = "quack_${id}"
+    @Transient val volumeName = "quack_$id"
     @Transient val containerName = "quack_$id"
 
     init {
@@ -23,7 +26,7 @@ data class Server(
     }
 
     fun validate(): String? {
-        if (!Validation.serverIdRegex.matches(id)) return "name"
+        if (!Validation.serverNameRegex.matches(name)) return "name"
         if (!Validation.domainRegex.matches(proxyHostname)) return "proxy hostname"
         if (isValidPath(startupScript)) return "startup script"
         return null
@@ -33,6 +36,7 @@ data class Server(
         fun fromRow(row: QueryRowSet): Server =
             Server(
                 row[TServers.id]!!,
+                row[TServers.name]!!,
                 row[TServers.startupScript]!!,
                 MPJavaVersion.parse(row[TServers.javaVersion]),
                 row[TServers.proxyHostname]!!
@@ -40,12 +44,14 @@ data class Server(
 
         fun of(
             id: String,
+            name: String,
             startupScript: String,
             javaVersion: MPJavaVersion,
             proxyHostname: String
         ): Result<Server> = runCatching {
             Server(
                 id,
+                name,
                 startupScript,
                 javaVersion,
                 proxyHostname
@@ -54,16 +60,8 @@ data class Server(
 
         fun findByID(id: String): Server? = database.from(TServers)
             .select()
-            .map { row ->
-                Server(
-                    row[TServers.id] ?: "",
-                    row[TServers.startupScript] ?: "",
-                    MPJavaVersion.Companion.parse(row[TServers.javaVersion]),
-                    row[TServers.proxyHostname] ?: ""
-                )
-            }
-            .find {
-                it.id == id
-            }
+            .where { TServers.name eq id }
+            .map(::fromRow)
+            .firstOrNull()
     }
 }

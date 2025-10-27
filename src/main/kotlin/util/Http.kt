@@ -4,8 +4,6 @@ import io.ktor.http.*
 import org.octsrv.schema.Server
 import org.octsrv.schema.Validation
 
-data class ErrorResponse(val status: HttpStatusCode, val message: String)
-
 sealed class HttpResult<out T> {
     data class Success<out T>(val value: T) : HttpResult<T>()
     data class Error(
@@ -37,7 +35,7 @@ sealed class HttpResult<out T> {
 fun serverFromIdParam(id: String?): HttpResult<Server> = when {
     (id == null) ->
         HttpResult.Error("id is missing!", HttpStatusCode.BadRequest)
-    (!Validation.serverIdRegex.matches(id)) ->
+    (!Validation.serverNameRegex.matches(id)) ->
         HttpResult.Error("invalid id!", HttpStatusCode.BadRequest)
     else -> {
         val server = Server.findByID(id)?:

@@ -1,13 +1,5 @@
 package org.octsrv
 
-import com.github.dockerjava.api.DockerClient
-import com.github.dockerjava.api.model.ExposedPort
-import com.github.dockerjava.api.model.HostConfig
-import com.github.dockerjava.api.model.Mount
-import com.github.dockerjava.api.model.MountType
-import com.github.dockerjava.core.DefaultDockerClientConfig
-import com.github.dockerjava.core.DockerClientImpl
-import com.github.dockerjava.httpclient5.ApacheDockerHttpClient
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -19,15 +11,18 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import org.ktorm.database.Database
 import org.ktorm.dsl.*
+import org.octsrv.ContainerManagement.createContainer
+import org.octsrv.ContainerManagement.createVolume
+import org.octsrv.ContainerManagement.dockerClient
+import org.octsrv.ContainerManagement.getServerStatus
+import org.octsrv.ContainerManagement.removeContainer
+import org.octsrv.ContainerManagement.startContainer
+import org.octsrv.ContainerManagement.stopContainer
 import org.octsrv.Migration.migrateTable
 import org.octsrv.schema.*
-import org.octsrv.schema.TServers.id
-import org.octsrv.util.logIfError
+import org.octsrv.util.randomHex
 import org.octsrv.util.serverFromIdParam
 import java.io.File
-import java.nio.file.Paths
-import java.time.Duration
-import kotlin.text.get
 
 //const val MC_ROUTER_HOSTS_FILE_PATH = "/app/config/hosts.json"
 const val MC_ROUTER_HOSTS_FILE_PATH = "./build/config/hosts.json"
@@ -36,18 +31,6 @@ val database = Database.connect(
     url = "jdbc:sqlite:main.db",
     driver = "org.sqlite.JDBC"
 )
-
-val dockerClient: DockerClient = run {
-    val config = DefaultDockerClientConfig.createDefaultConfigBuilder().build()
-    val httpClient = ApacheDockerHttpClient.Builder()
-        .dockerHost(config.dockerHost)
-        .sslConfig(config.sslConfig)
-        .maxConnections(100)
-        .connectionTimeout(Duration.ofSeconds(30))
-        .responseTimeout(Duration.ofSeconds(45))
-        .build()
-    DockerClientImpl.getInstance(config, httpClient)
-}
 
 fun main() {
     val file = File(MC_ROUTER_HOSTS_FILE_PATH)
@@ -66,11 +49,11 @@ fun Application.module() {
 
     routing {
         get("/") {
-            call.respondText("Hello, Ktor!")
+            return@get call.respondText("Hello, Ktor!")
         }
 
         get("/json") {
-            call.respond(mapOf("message" to "Hello, JSON!"))
+            return@get call.respond(mapOf("message" to "Hello, JSON!"))
         }
 
         post("/s") {
@@ -80,12 +63,20 @@ fun Application.module() {
                 return@post call.respond(HttpStatusCode.BadRequest, mapOf("error" to it))
             }
 
-            dockerClient.createVolumeCmd()
-                .withName(server.volumeName)
-                .exec()
+            createVolume(server).onFailure {
+                it.printStackTrace()
+                WebHookService.sendNonFatalError("Failed to create volume for ${server.name}: ${it.message}")
+                return@post call.respond(HttpStatusCode.InternalServerError, mapOf("error" to it))
+            }
+            createContainer(server).onFailure {
+                it.printStackTrace()
+                WebHookService.sendNonFatalError("Failed to create container for ${server.name}: ${it.message}")
+                return@post call.respond(HttpStatusCode.InternalServerError, mapOf("error" to it))
+            }
 
             database.insert(TServers) {
-                set(it.id, server.id)
+                set(it.id, randomHex(8))
+                set(it.name, server.name)
                 set(it.startupScript, server.startupScript)
                 set(it.javaVersion, server.javaVersion.number())
                 set(it.proxyHostname, server.proxyHostname)
@@ -93,12 +84,22 @@ fun Application.module() {
         }
 
         get("/s") {
-            call.respond(database.from(TServers).select().map { row -> Server(
-                row[TServers.id]?:"",
-                row[TServers.startupScript]?:"",
-                MPJavaVersion.parse(row[TServers.javaVersion]),
-                row[TServers.proxyHostname]?:""
-            ) })
+            return@get call.respond(HttpStatusCode.OK, database
+                .from(TServers)
+                .select()
+                .map(Server::fromRow)
+                .map(::getServerStatus)
+            )
+        }
+
+        get("/s/{id}") {
+            val server = serverFromIdParam(call.parameters["id"]).getOrElse {
+                return@get call.respond(it.status, mapOf("error" to it.error))
+            }
+            return@get call.respond(
+                HttpStatusCode.OK,
+                getServerStatus(server)
+            )
         }
 
         patch("/s/{id}") {
@@ -108,12 +109,18 @@ fun Application.module() {
         }
 
         delete("/s/{id}") {
-            val id = serverFromIdParam(call.parameters["id"]).getOrElse {
+            val server = serverFromIdParam(call.parameters["id"]).getOrElse {
                 return@delete call.respond(it.status, mapOf("error" to it.error))
-            }.id
+            }
+
+            removeContainer(server).onFailure {
+                it.printStackTrace()
+                WebHookService.sendNonFatalError("Failed to create container for ${server.name}: ${it.message}")
+                return@delete call.respond(HttpStatusCode.InternalServerError, mapOf("error" to it))
+            }
 
             database.delete(TServers) {
-                it.id eq id
+                it.id eq server.id
             }
 
             return@delete call.respond(HttpStatusCode.OK)
@@ -123,6 +130,24 @@ fun Application.module() {
             val server = serverFromIdParam(call.parameters["id"]).getOrElse {
                 return@post call.respond(it.status, mapOf("error" to it.error))
             }
+            startContainer(server).onFailure {
+                it.printStackTrace()
+                WebHookService.sendNonFatalError("Failed to start container for ${server.name}: ${it.message}")
+                return@post call.respond(HttpStatusCode.InternalServerError, mapOf("error" to it))
+            }
+            return@post call.respond(HttpStatusCode.OK)
+        }
+
+        post("/s/{id}/stop") {
+            val server = serverFromIdParam(call.parameters["id"]).getOrElse {
+                return@post call.respond(it.status, mapOf("error" to it.error))
+            }
+            stopContainer(server).onFailure {
+                it.printStackTrace()
+                WebHookService.sendNonFatalError("Failed to stop container for ${server.name}: ${it.message}")
+                return@post call.respond(HttpStatusCode.InternalServerError, mapOf("error" to it))
+            }
+            return@post call.respond(HttpStatusCode.OK)
         }
     }
 }
